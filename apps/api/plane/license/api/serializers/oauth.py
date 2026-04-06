@@ -32,35 +32,6 @@ class OAuthAppSerializer(serializers.ModelSerializer):
         ]
 
 
-class OAuthAppCreateSerializer(serializers.ModelSerializer):
-    """
-    Used only for creation. Returns client_secret in plaintext once.
-    """
-
-    client_secret = serializers.CharField(read_only=True)
-
-    class Meta:
-        model = OAuthApp
-        fields = [
-            "id",
-            "name",
-            "description",
-            "client_id",
-            "client_secret",
-            "redirect_uris",
-            "homepage_url",
-            "logo_url",
-            "allowed_scopes",
-            "created_at",
-        ]
-        read_only_fields = [
-            "id",
-            "client_id",
-            "client_secret",
-            "created_at",
-        ]
-
-
 class OAuthAppInstallationSerializer(serializers.ModelSerializer):
     app_name = serializers.CharField(source="app.name", read_only=True)
 

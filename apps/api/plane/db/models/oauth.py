@@ -3,7 +3,9 @@
 # See the LICENSE file for details.
 
 import hashlib
+import hmac
 import secrets
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from django.conf import settings
@@ -12,6 +14,25 @@ from django.utils import timezone
 
 from .base import BaseModel
 
+
+# ── Valid scopes ────────────────────────────────────────────────────
+VALID_SCOPES = frozenset([
+    "read:projects",
+    "write:projects",
+    "read:issues",
+    "write:issues",
+    "read:pages",
+    "write:pages",
+    "read:cycles",
+    "write:cycles",
+    "read:modules",
+    "write:modules",
+    "read:members",
+    "admin",
+])
+
+
+# ── Token generators ───────────────────────────────────────────────
 
 def generate_client_id():
     return "plane_ci_" + uuid4().hex
@@ -33,6 +54,50 @@ def generate_refresh_token():
     return "plane_rt_" + secrets.token_urlsafe(48)
 
 
+def _hash_secret(value):
+    """SHA-256 hash for token/secret storage."""
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _constant_time_compare(a, b):
+    """Timing-safe comparison to prevent side-channel attacks."""
+    return hmac.compare_digest(a, b)
+
+
+# ── Validators ──────────────────────────────────────────────────────
+
+def validate_redirect_uris(uris):
+    """Validate redirect URIs are well-formed with https or localhost."""
+    if not isinstance(uris, list):
+        raise ValueError("redirect_uris must be a list")
+    for uri in uris:
+        if not isinstance(uri, str) or not uri.strip():
+            raise ValueError(f"Invalid redirect URI: {uri!r}")
+        parsed = urlparse(uri)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(f"Malformed redirect URI: {uri}")
+        # Allow http only for localhost (development)
+        if parsed.scheme == "http" and parsed.hostname not in (
+            "localhost",
+            "127.0.0.1",
+            "[::1]",
+        ):
+            raise ValueError(
+                f"Non-localhost redirect URIs must use https: {uri}"
+            )
+
+
+def validate_scopes(scopes):
+    """Validate scopes are from the known set."""
+    if not isinstance(scopes, list):
+        raise ValueError("scopes must be a list")
+    invalid = set(scopes) - VALID_SCOPES
+    if invalid:
+        raise ValueError(f"Invalid scopes: {', '.join(sorted(invalid))}")
+
+
+# ── Models ──────────────────────────────────────────────────────────
+
 class OAuthApp(BaseModel):
     """
     A registered OAuth application that can request authorization
@@ -44,8 +109,7 @@ class OAuthApp(BaseModel):
     client_id = models.CharField(
         max_length=64, unique=True, db_index=True, default=generate_client_id
     )
-    # Client secret is stored as a SHA-256 hash. The plaintext is only
-    # shown once at creation time and cannot be recovered.
+    # Client secret stored as SHA-256 hash. Plaintext shown once at creation.
     client_secret_hash = models.CharField(max_length=64)
     redirect_uris = models.JSONField(default=list)
     homepage_url = models.URLField(blank=True, default="")
@@ -68,18 +132,19 @@ class OAuthApp(BaseModel):
         return self.name
 
     def set_client_secret(self, raw_secret):
-        self.client_secret_hash = hashlib.sha256(
-            raw_secret.encode()
-        ).hexdigest()
+        self.client_secret_hash = _hash_secret(raw_secret)
 
     def verify_client_secret(self, raw_secret):
-        return (
-            hashlib.sha256(raw_secret.encode()).hexdigest()
-            == self.client_secret_hash
+        return _constant_time_compare(
+            _hash_secret(raw_secret), self.client_secret_hash
         )
 
     def is_redirect_uri_valid(self, uri):
         return uri in self.redirect_uris
+
+    def revoke_all_tokens(self):
+        """Revoke all active access and refresh tokens for this app."""
+        self.access_tokens.filter(is_revoked=False).update(is_revoked=True)
 
 
 class OAuthAppInstallation(BaseModel):
@@ -118,11 +183,13 @@ class OAuthAuthorizationCode(BaseModel):
     """
     Temporary authorization code issued during the OAuth consent flow.
     Single-use and short-lived (10 minutes).
+
+    The code is stored as a SHA-256 hash. The plaintext is returned
+    to the client once via redirect and cannot be recovered from the DB.
     """
 
-    code = models.CharField(
-        max_length=128, unique=True, db_index=True, default=generate_auth_code
-    )
+    # Hash of the authorization code for lookup
+    code_hash = models.CharField(max_length=64, unique=True, db_index=True)
     app = models.ForeignKey(
         OAuthApp, on_delete=models.CASCADE, related_name="auth_codes"
     )
@@ -137,7 +204,10 @@ class OAuthAuthorizationCode(BaseModel):
     # PKCE support (RFC 7636)
     code_challenge = models.CharField(max_length=128, blank=True, default="")
     code_challenge_method = models.CharField(
-        max_length=10, blank=True, default=""
+        max_length=10,
+        blank=True,
+        default="",
+        choices=[("", ""), ("S256", "S256"), ("plain", "plain")],
     )
     expires_at = models.DateTimeField()
     used = models.BooleanField(default=False)
@@ -155,16 +225,24 @@ class OAuthAuthorizationCode(BaseModel):
     def is_expired(self):
         return timezone.now() > self.expires_at
 
+    @classmethod
+    def lookup_by_code(cls, raw_code):
+        """Look up an auth code by its plaintext value (hashed for query)."""
+        return cls.objects.filter(code_hash=_hash_secret(raw_code)).first()
+
 
 class OAuthAccessToken(BaseModel):
-    """Access token issued to an OAuth app for a specific user + workspace."""
+    """
+    Access token issued to an OAuth app for a specific user + workspace.
 
-    token = models.CharField(
-        max_length=128,
-        unique=True,
-        db_index=True,
-        default=generate_access_token,
-    )
+    The token is stored as a SHA-256 hash. The plaintext is returned
+    once at issuance and cannot be recovered from the DB.
+    """
+
+    # Hash of the access token for lookup
+    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    # First 8 chars of the token for display/identification
+    token_prefix = models.CharField(max_length=20, default="")
     app = models.ForeignKey(
         OAuthApp, on_delete=models.CASCADE, related_name="access_tokens"
     )
@@ -189,7 +267,7 @@ class OAuthAccessToken(BaseModel):
         ordering = ("-created_at",)
 
     def __str__(self):
-        return f"Token for {self.app.name} ({self.user})"
+        return f"Token {self.token_prefix}... for {self.app.name}"
 
     @property
     def is_expired(self):
@@ -199,16 +277,21 @@ class OAuthAccessToken(BaseModel):
     def is_valid(self):
         return not self.is_revoked and not self.is_expired
 
+    @classmethod
+    def lookup_by_token(cls, raw_token):
+        """Look up an access token by its plaintext value (hashed for query)."""
+        return cls.objects.filter(token_hash=_hash_secret(raw_token)).first()
+
 
 class OAuthRefreshToken(BaseModel):
-    """Refresh token for obtaining new access tokens."""
+    """
+    Refresh token for obtaining new access tokens.
 
-    token = models.CharField(
-        max_length=128,
-        unique=True,
-        db_index=True,
-        default=generate_refresh_token,
-    )
+    Stored as SHA-256 hash like access tokens.
+    """
+
+    # Hash of the refresh token for lookup
+    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
     access_token = models.OneToOneField(
         OAuthAccessToken,
         on_delete=models.CASCADE,
@@ -235,3 +318,8 @@ class OAuthRefreshToken(BaseModel):
     @property
     def is_valid(self):
         return not self.is_revoked and not self.is_expired
+
+    @classmethod
+    def lookup_by_token(cls, raw_token):
+        """Look up a refresh token by its plaintext value (hashed for query)."""
+        return cls.objects.filter(token_hash=_hash_secret(raw_token)).first()
