@@ -45,6 +45,12 @@ from .views import (
     GiteaCallbackSpaceEndpoint,
     GiteaOauthInitiateSpaceEndpoint,
 )
+from .views.app.oauth_provider import (
+    OAuthAuthorizeEndpoint,
+    OAuthTokenEndpoint,
+    OAuthTokenRevokeEndpoint,
+    OAuthAppInstallationEndpoint as OAuthAppInstallationPublicEndpoint,
+)
 
 urlpatterns = [
     # credentials
@@ -149,5 +155,26 @@ urlpatterns = [
         "spaces/gitea/callback/",
         GiteaCallbackSpaceEndpoint.as_view(),
         name="space-gitea-callback",
+    ),
+    ## OAuth Provider (Plane as OAuth server)
+    path(
+        "o/authorize-app/",
+        OAuthAuthorizeEndpoint.as_view(),
+        name="oauth-authorize",
+    ),
+    path(
+        "o/token/",
+        OAuthTokenEndpoint.as_view(),
+        name="oauth-token",
+    ),
+    path(
+        "o/token/revoke/",
+        OAuthTokenRevokeEndpoint.as_view(),
+        name="oauth-token-revoke",
+    ),
+    path(
+        "o/app-installation/",
+        OAuthAppInstallationPublicEndpoint.as_view(),
+        name="oauth-app-installation",
     ),
 ]
