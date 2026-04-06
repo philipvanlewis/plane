@@ -19,6 +19,11 @@ from plane.license.api.views import (
     InstanceWorkSpaceAvailabilityCheckEndpoint,
     InstanceWorkSpaceEndpoint,
 )
+from plane.license.api.views.oauth import (
+    OAuthAppEndpoint,
+    OAuthAppRegenerateSecretEndpoint,
+    OAuthAppInstallationEndpoint,
+)
 
 urlpatterns = [
     path("", InstanceEndpoint.as_view(), name="instance"),
@@ -71,4 +76,17 @@ urlpatterns = [
         name="instance-workspace-availability",
     ),
     path("workspaces/", InstanceWorkSpaceEndpoint.as_view(), name="instance-workspace"),
+    # OAuth app management (admin only)
+    path("oauth-apps/", OAuthAppEndpoint.as_view(), name="oauth-apps"),
+    path("oauth-apps/<uuid:pk>/", OAuthAppEndpoint.as_view(), name="oauth-app-detail"),
+    path(
+        "oauth-apps/<uuid:pk>/regenerate-secret/",
+        OAuthAppRegenerateSecretEndpoint.as_view(),
+        name="oauth-app-regenerate-secret",
+    ),
+    path(
+        "oauth-apps/<uuid:pk>/installations/",
+        OAuthAppInstallationEndpoint.as_view(),
+        name="oauth-app-installations",
+    ),
 ]
