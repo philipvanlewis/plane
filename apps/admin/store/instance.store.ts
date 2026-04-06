@@ -183,8 +183,7 @@ export class InstanceStore implements IInstanceStore {
     try {
       const response = await this.instanceService.updateConfigurations(data);
       runInAction(() => {
-        // Update existing items and collect response keys that were matched
-        const responseKeys = new Set(response.map((item) => item.key));
+        // Update existing items and track which keys already exist
         const existingKeys = new Set(this.instanceConfigurations?.map((config) => config.key));
 
         const updatedConfigs =

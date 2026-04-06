@@ -64,13 +64,26 @@ class InstanceConfigurationEndpoint(BaseAPIView):
     @invalidate_cache(path="/api/instances/configurations/", user=False)
     @invalidate_cache(path="/api/instances/", user=False)
     def patch(self, request):
-        # Build lookup of known config metadata for creating missing rows
+        # Build allowlist of known config keys from instance_config_variables
+        # plus the IS_*_ENABLED flags that are seeded separately.
         from plane.utils.instance_config_variables import instance_config_variables
 
         config_meta = {item["key"]: item for item in instance_config_variables}
+        allowed_keys = set(config_meta.keys()) | {
+            "IS_GOOGLE_ENABLED",
+            "IS_GITHUB_ENABLED",
+            "IS_GITLAB_ENABLED",
+            "IS_GITEA_ENABLED",
+        }
+
+        # Filter request to only known config keys
+        request_keys = set(request.data.keys()) & allowed_keys
+
+        if not request_keys:
+            return Response([], status=status.HTTP_200_OK)
 
         existing_configurations = InstanceConfiguration.objects.filter(
-            key__in=request.data.keys()
+            key__in=request_keys
         )
         existing_keys = set(existing_configurations.values_list("key", flat=True))
 
@@ -78,8 +91,13 @@ class InstanceConfigurationEndpoint(BaseAPIView):
         bulk_configurations = []
         for configuration in existing_configurations:
             value = request.data.get(configuration.key, configuration.value)
-            if value and isinstance(value, str):
-                value = value.strip()
+            # Coerce to string, trim whitespace on non-encrypted values only
+            if value is not None:
+                value = str(value)
+                if not configuration.is_encrypted:
+                    value = value.strip()
+            else:
+                value = ""
             if configuration.is_encrypted:
                 configuration.value = encrypt_data(value)
             else:
@@ -94,15 +112,20 @@ class InstanceConfigurationEndpoint(BaseAPIView):
         # Create missing rows — this handles the case where IS_*_ENABLED
         # flags were never seeded due to the configure_instance bug.
         # See: https://github.com/makeplane/plane/issues/8739
-        missing_keys = set(request.data.keys()) - existing_keys
+        missing_keys = request_keys - existing_keys
         created_configurations = []
         for key in missing_keys:
             value = request.data[key]
-            if value and isinstance(value, str):
-                value = value.strip()
             meta = config_meta.get(key, {})
             is_encrypted = meta.get("is_encrypted", "SECRET" in key or "PASSWORD" in key)
             category = meta.get("category", _infer_category(key))
+            # Coerce to string, trim non-encrypted values
+            if value is not None:
+                value = str(value)
+                if not is_encrypted:
+                    value = value.strip()
+            else:
+                value = ""
             created_configurations.append(
                 InstanceConfiguration(
                     key=key,
@@ -113,11 +136,16 @@ class InstanceConfigurationEndpoint(BaseAPIView):
             )
 
         if created_configurations:
-            InstanceConfiguration.objects.bulk_create(created_configurations)
+            # ignore_conflicts handles concurrent PATCH calls that race on
+            # the same missing key — the second caller's insert is a no-op
+            # instead of raising IntegrityError.
+            InstanceConfiguration.objects.bulk_create(
+                created_configurations, ignore_conflicts=True
+            )
 
         # Return all affected configurations
         all_configurations = InstanceConfiguration.objects.filter(
-            key__in=request.data.keys()
+            key__in=request_keys
         )
         serializer = InstanceConfigurationSerializer(all_configurations, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
