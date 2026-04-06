@@ -22,6 +22,7 @@ export default [
     route("ai", "./(all)/(dashboard)/ai/page.tsx"),
     route("image", "./(all)/(dashboard)/image/page.tsx"),
     route("oauth-apps", "./(all)/(dashboard)/oauth-apps/page.tsx"),
+    route("oauth-consent", "./(all)/(dashboard)/oauth-consent/page.tsx"),
   ]),
   // Catch-all route for 404 handling - must be last
   route("*", "./components/404.tsx"),

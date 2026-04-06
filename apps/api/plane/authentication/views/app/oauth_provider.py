@@ -138,7 +138,8 @@ class OAuthAuthorizeEndpoint(View):
             "app_description": app.description,
         }
 
-        # Redirect to the consent page in the admin UI
+        # Redirect to the consent page in the admin UI.
+        # The admin app is served at /god-mode/ by the Nginx proxy.
         consent_params = urlencode({
             "client_id": client_id,
             "app_name": app.name,
