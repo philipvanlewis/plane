@@ -40,113 +40,46 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(self.style.WARNING(f"{obj.key} configuration already exists"))
 
-        keys = ["IS_GOOGLE_ENABLED", "IS_GITHUB_ENABLED", "IS_GITLAB_ENABLED", "IS_GITEA_ENABLED"]
-        if not InstanceConfiguration.objects.filter(key__in=keys).exists():
-            for key in keys:
-                if key == "IS_GOOGLE_ENABLED":
-                    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET = get_configuration_value(
-                        [
-                            {
-                                "key": "GOOGLE_CLIENT_ID",
-                                "default": os.environ.get("GOOGLE_CLIENT_ID", ""),
-                            },
-                            {
-                                "key": "GOOGLE_CLIENT_SECRET",
-                                "default": os.environ.get("GOOGLE_CLIENT_SECRET", "0"),
-                            },
-                        ]
-                    )
-                    if bool(GOOGLE_CLIENT_ID) and bool(GOOGLE_CLIENT_SECRET):
-                        value = "1"
-                    else:
-                        value = "0"
-                    InstanceConfiguration.objects.create(
-                        key=key,
-                        value=value,
-                        category="AUTHENTICATION",
-                        is_encrypted=False,
-                    )
-                    self.stdout.write(self.style.SUCCESS(f"{key} loaded with value from environment variable."))
-                if key == "IS_GITHUB_ENABLED":
-                    GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET = get_configuration_value(
-                        [
-                            {
-                                "key": "GITHUB_CLIENT_ID",
-                                "default": os.environ.get("GITHUB_CLIENT_ID", ""),
-                            },
-                            {
-                                "key": "GITHUB_CLIENT_SECRET",
-                                "default": os.environ.get("GITHUB_CLIENT_SECRET", "0"),
-                            },
-                        ]
-                    )
-                    if bool(GITHUB_CLIENT_ID) and bool(GITHUB_CLIENT_SECRET):
-                        value = "1"
-                    else:
-                        value = "0"
-                    InstanceConfiguration.objects.create(
-                        key="IS_GITHUB_ENABLED",
-                        value=value,
-                        category="AUTHENTICATION",
-                        is_encrypted=False,
-                    )
-                    self.stdout.write(self.style.SUCCESS(f"{key} loaded with value from environment variable."))
-                if key == "IS_GITLAB_ENABLED":
-                    GITLAB_HOST, GITLAB_CLIENT_ID, GITLAB_CLIENT_SECRET = get_configuration_value(
-                        [
-                            {
-                                "key": "GITLAB_HOST",
-                                "default": os.environ.get("GITLAB_HOST", "https://gitlab.com"),
-                            },
-                            {
-                                "key": "GITLAB_CLIENT_ID",
-                                "default": os.environ.get("GITLAB_CLIENT_ID", ""),
-                            },
-                            {
-                                "key": "GITLAB_CLIENT_SECRET",
-                                "default": os.environ.get("GITLAB_CLIENT_SECRET", ""),
-                            },
-                        ]
-                    )
-                    if bool(GITLAB_HOST) and bool(GITLAB_CLIENT_ID) and bool(GITLAB_CLIENT_SECRET):
-                        value = "1"
-                    else:
-                        value = "0"
-                    InstanceConfiguration.objects.create(
-                        key="IS_GITLAB_ENABLED",
-                        value=value,
-                        category="AUTHENTICATION",
-                        is_encrypted=False,
-                    )
-                    self.stdout.write(self.style.SUCCESS(f"{key} loaded with value from environment variable."))
-                if key == "IS_GITEA_ENABLED":
-                    GITEA_HOST, GITEA_CLIENT_ID, GITEA_CLIENT_SECRET = get_configuration_value(
-                        [
-                            {
-                                "key": "GITEA_HOST",
-                                "default": os.environ.get("GITEA_HOST", ""),
-                            },
-                            {
-                                "key": "GITEA_CLIENT_ID",
-                                "default": os.environ.get("GITEA_CLIENT_ID", ""),
-                            },
-                            {
-                                "key": "GITEA_CLIENT_SECRET",
-                                "default": os.environ.get("GITEA_CLIENT_SECRET", ""),
-                            },
-                        ]
-                    )
-                    if bool(GITEA_HOST) and bool(GITEA_CLIENT_ID) and bool(GITEA_CLIENT_SECRET):
-                        value = "1"
-                    else:
-                        value = "0"
-                    InstanceConfiguration.objects.create(
-                        key="IS_GITEA_ENABLED",
-                        value=value,
-                        category="AUTHENTICATION",
-                        is_encrypted=False,
-                    )
-                    self.stdout.write(self.style.SUCCESS(f"{key} loaded with value from environment variable."))
-        else:
-            for key in keys:
+        # Seed each IS_*_ENABLED flag independently using get_or_create.
+        # Previous implementation used an all-or-nothing exists() check across
+        # all four keys, which failed because IS_GITEA_ENABLED was already
+        # seeded by instance_config_variables above — causing IS_GOOGLE_ENABLED,
+        # IS_GITHUB_ENABLED, and IS_GITLAB_ENABLED to never be created.
+        # See: https://github.com/makeplane/plane/issues/8739
+
+        def _seed_enabled_flag(key, config_lookups, category="AUTHENTICATION"):
+            """Seed a single IS_*_ENABLED flag if it doesn't already exist."""
+            _, created = InstanceConfiguration.objects.get_or_create(
+                key=key,
+                defaults={
+                    "value": "1" if all(bool(v) for v in get_configuration_value(config_lookups)) else "0",
+                    "category": category,
+                    "is_encrypted": False,
+                },
+            )
+            if created:
+                self.stdout.write(self.style.SUCCESS(f"{key} loaded with value from environment variable."))
+            else:
                 self.stdout.write(self.style.WARNING(f"{key} configuration already exists"))
+
+        _seed_enabled_flag("IS_GOOGLE_ENABLED", [
+            {"key": "GOOGLE_CLIENT_ID", "default": os.environ.get("GOOGLE_CLIENT_ID", "")},
+            {"key": "GOOGLE_CLIENT_SECRET", "default": os.environ.get("GOOGLE_CLIENT_SECRET", "0")},
+        ])
+
+        _seed_enabled_flag("IS_GITHUB_ENABLED", [
+            {"key": "GITHUB_CLIENT_ID", "default": os.environ.get("GITHUB_CLIENT_ID", "")},
+            {"key": "GITHUB_CLIENT_SECRET", "default": os.environ.get("GITHUB_CLIENT_SECRET", "0")},
+        ])
+
+        _seed_enabled_flag("IS_GITLAB_ENABLED", [
+            {"key": "GITLAB_HOST", "default": os.environ.get("GITLAB_HOST", "https://gitlab.com")},
+            {"key": "GITLAB_CLIENT_ID", "default": os.environ.get("GITLAB_CLIENT_ID", "")},
+            {"key": "GITLAB_CLIENT_SECRET", "default": os.environ.get("GITLAB_CLIENT_SECRET", "")},
+        ])
+
+        _seed_enabled_flag("IS_GITEA_ENABLED", [
+            {"key": "GITEA_HOST", "default": os.environ.get("GITEA_HOST", "")},
+            {"key": "GITEA_CLIENT_ID", "default": os.environ.get("GITEA_CLIENT_ID", "")},
+            {"key": "GITEA_CLIENT_SECRET", "default": os.environ.get("GITEA_CLIENT_SECRET", "")},
+        ])

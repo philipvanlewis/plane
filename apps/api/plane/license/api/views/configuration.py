@@ -29,6 +29,29 @@ from plane.utils.cache import cache_response, invalidate_cache
 from plane.license.utils.instance_value import get_email_configuration
 
 
+def _infer_category(key):
+    """Infer the configuration category from the key name."""
+    prefixes = {
+        "GOOGLE_": "GOOGLE",
+        "GITHUB_": "GITHUB",
+        "GITLAB_": "GITLAB",
+        "GITEA_": "GITEA",
+        "EMAIL_": "SMTP",
+        "ENABLE_SMTP": "SMTP",
+        "LLM_": "AI",
+        "GPT_": "AI",
+        "UNSPLASH_": "UNSPLASH",
+        "INTERCOM": "INTERCOM",
+    }
+    for prefix, category in prefixes.items():
+        if key.startswith(prefix):
+            return category
+    # IS_*_ENABLED flags for auth providers
+    if key.startswith("IS_") and key.endswith("_ENABLED"):
+        return "AUTHENTICATION"
+    return "AUTHENTICATION"
+
+
 class InstanceConfigurationEndpoint(BaseAPIView):
     permission_classes = [InstanceAdminPermission]
 
@@ -41,20 +64,62 @@ class InstanceConfigurationEndpoint(BaseAPIView):
     @invalidate_cache(path="/api/instances/configurations/", user=False)
     @invalidate_cache(path="/api/instances/", user=False)
     def patch(self, request):
-        configurations = InstanceConfiguration.objects.filter(key__in=request.data.keys())
+        # Build lookup of known config metadata for creating missing rows
+        from plane.utils.instance_config_variables import instance_config_variables
 
+        config_meta = {item["key"]: item for item in instance_config_variables}
+
+        existing_configurations = InstanceConfiguration.objects.filter(
+            key__in=request.data.keys()
+        )
+        existing_keys = set(existing_configurations.values_list("key", flat=True))
+
+        # Update existing rows
         bulk_configurations = []
-        for configuration in configurations:
+        for configuration in existing_configurations:
             value = request.data.get(configuration.key, configuration.value)
+            if value and isinstance(value, str):
+                value = value.strip()
             if configuration.is_encrypted:
                 configuration.value = encrypt_data(value)
             else:
                 configuration.value = value
             bulk_configurations.append(configuration)
 
-        InstanceConfiguration.objects.bulk_update(bulk_configurations, ["value"], batch_size=100)
+        if bulk_configurations:
+            InstanceConfiguration.objects.bulk_update(
+                bulk_configurations, ["value"], batch_size=100
+            )
 
-        serializer = InstanceConfigurationSerializer(configurations, many=True)
+        # Create missing rows — this handles the case where IS_*_ENABLED
+        # flags were never seeded due to the configure_instance bug.
+        # See: https://github.com/makeplane/plane/issues/8739
+        missing_keys = set(request.data.keys()) - existing_keys
+        created_configurations = []
+        for key in missing_keys:
+            value = request.data[key]
+            if value and isinstance(value, str):
+                value = value.strip()
+            meta = config_meta.get(key, {})
+            is_encrypted = meta.get("is_encrypted", "SECRET" in key or "PASSWORD" in key)
+            category = meta.get("category", _infer_category(key))
+            created_configurations.append(
+                InstanceConfiguration(
+                    key=key,
+                    value=encrypt_data(value) if is_encrypted else value,
+                    category=category,
+                    is_encrypted=is_encrypted,
+                )
+            )
+
+        if created_configurations:
+            InstanceConfiguration.objects.bulk_create(created_configurations)
+
+        # Return all affected configurations
+        all_configurations = InstanceConfiguration.objects.filter(
+            key__in=request.data.keys()
+        )
+        serializer = InstanceConfigurationSerializer(all_configurations, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 

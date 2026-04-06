@@ -183,11 +183,27 @@ export class InstanceStore implements IInstanceStore {
     try {
       const response = await this.instanceService.updateConfigurations(data);
       runInAction(() => {
-        this.instanceConfigurations = this.instanceConfigurations?.map((config) => {
-          const item = response.find((item) => item.key === config.key);
-          if (item) return item;
-          return config;
-        });
+        // Update existing items and collect response keys that were matched
+        const responseKeys = new Set(response.map((item) => item.key));
+        const existingKeys = new Set(this.instanceConfigurations?.map((config) => config.key));
+
+        const updatedConfigs =
+          this.instanceConfigurations?.map((config) => {
+            const item = response.find((item) => item.key === config.key);
+            if (item) return item;
+            return config;
+          }) ?? [];
+
+        // Append any new items from the response that weren't in the
+        // existing list. This handles the case where the backend creates
+        // missing config rows (e.g., IS_*_ENABLED flags that were never
+        // seeded due to the configure_instance bug).
+        const newItems = response.filter((item) => !existingKeys.has(item.key));
+        if (newItems.length > 0) {
+          updatedConfigs.push(...newItems);
+        }
+
+        this.instanceConfigurations = updatedConfigs;
       });
       return response;
     } catch (error) {
